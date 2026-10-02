@@ -595,8 +595,16 @@ EOF
 		return 1
 	fi
 	setCurrentStep "Running the FreePBX installer from $FREEPBX_TARBALL"
-	./install -n --dbuser root >> "$log" 2>&1
+	# framework's installer exits 1 even on success (FreePBXInstallCommand::execute()
+	# returns 1), so judge it by its final message.
+	local out=/var/log/pbx/freepbx-framework-install.log rc=0
+	./install -n --dbuser root > "$out" 2>&1 || rc=$?
+	cat "$out" >> "$log"
 	cd - >/dev/null
+	if ! grep -q "You have successfully installed FreePBX" "$out"; then
+		message "FreePBX installer failed (exit $rc), see $out"
+		return 1
+	fi
 }
 
 
