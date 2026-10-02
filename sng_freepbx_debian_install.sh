@@ -48,7 +48,9 @@ DEBIAN_OS_VERSION=""
 #####################################################################################
 ASTERISK_DEBS="${ASTERISK_DEBS:-}"
 ASTERISK_DEB_INCLUDE="${ASTERISK_DEB_INCLUDE:-}"
-ASTERISK_DEB_EXCLUDE="${ASTERISK_DEB_EXCLUDE:-(-dbgsym|-dbg)_}"
+# Default skips debug/dev packages and the IMAP/ODBC voicemail variants, which conflict
+# with the plain asterisk<ver>-voicemail that FreePBX uses.
+ASTERISK_DEB_EXCLUDE="${ASTERISK_DEB_EXCLUDE-(-dbgsym|-dbg|-devel|-dev|-voicemail-imapstorage|-voicemail-odbcstorage)_}"
 FREEPBX_TARBALL="${FREEPBX_TARBALL:-}"
 MODULE_REPO_URL="${MODULE_REPO_URL:-}"
 DOWNLOAD_AUTH_HEADER="${DOWNLOAD_AUTH_HEADER:-}"

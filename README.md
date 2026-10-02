@@ -33,7 +33,7 @@ script behaves exactly like upstream.
 |---|---|---|
 | `--asterisk-debs <src>` | `ASTERISK_DEBS` | Install Asterisk from our `.deb` files. `<src>` is a directory, a `.deb`, an archive of debs (`.tar.gz`, `.tgz`, `.tar.xz`, `.zip`) or an `http(s)` URL of one; several may be given separated by spaces. Every `*.deb` found is installed with `apt-get`, so Debian dependencies are resolved normally. |
 | `--asterisk-deb-include <regex>` | `ASTERISK_DEB_INCLUDE` | Only install `.deb` files whose name matches (e.g. pick one Asterisk version from a release that has several). |
-| `--asterisk-deb-exclude <regex>` | `ASTERISK_DEB_EXCLUDE` | Skip `.deb` files whose name matches. Default `(-dbgsym\|-dbg)_`. |
+| `--asterisk-deb-exclude <regex>` | `ASTERISK_DEB_EXCLUDE` | Skip `.deb` files whose name matches. Default skips debug/dev packages and the IMAP/ODBC voicemail variants (they conflict with plain voicemail): `(-dbgsym\|-dbg\|-devel\|-dev\|-voicemail-imapstorage\|-voicemail-odbcstorage)_`. Set it to an empty string to install everything. |
 | `--freepbx-tarball <src>` | `FREEPBX_TARBALL` | Install FreePBX from our `freepbx-17.0-full.tgz` (framework + modules, from a `freepbx-modules-17-*` release of TheTechNetwork/telephony-builds) with the classic `./start_asterisk start && ./install -n` instead of Sangoma's `freepbx17` package. File, directory or URL. |
 | `--module-repo <url>` | `MODULE_REPO_URL` | Set FreePBX's `MODULE_REPO` (the server Module Admin downloads modules from) to our own module server. |
 | `--no-sangoma` | | Refuse to use `deb.freepbx.org` at all; fails if something would still need it (e.g. `--dahdi`). Implied when both Asterisk and FreePBX come from our sources. |
