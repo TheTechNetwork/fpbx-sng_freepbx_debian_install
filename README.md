@@ -23,6 +23,40 @@ This script is to install FreePBX  on the top of vanilla Debian 12.x OS.
 
 [See our WIKI](https://sangomakb.atlassian.net/wiki/spaces/FP/pages/9732130/Install+FreePBX)
 
+### Installing without Sangoma (TheTechNetwork fork)
+
+This `custom/main` branch of TheTechNetwork's fork adds options to install from our own
+builds instead of Sangoma's `deb.freepbx.org` repository. Without these options the
+script behaves exactly like upstream.
+
+| Option | Env variable | Meaning |
+|---|---|---|
+| `--asterisk-debs <src>` | `ASTERISK_DEBS` | Install Asterisk from our `.deb` files. `<src>` is a directory, a `.deb`, an archive of debs (`.tar.gz`, `.tgz`, `.tar.xz`, `.zip`) or an `http(s)` URL of one; several may be given separated by spaces. Every `*.deb` found is installed with `apt-get`, so Debian dependencies are resolved normally. |
+| `--asterisk-deb-include <regex>` | `ASTERISK_DEB_INCLUDE` | Only install `.deb` files whose name matches (e.g. pick one Asterisk version from a release that has several). |
+| `--asterisk-deb-exclude <regex>` | `ASTERISK_DEB_EXCLUDE` | Skip `.deb` files whose name matches. Default `(-dbgsym\|-dbg)_`. |
+| `--freepbx-tarball <src>` | `FREEPBX_TARBALL` | Install FreePBX from our `freepbx-17.0-full.tgz` (framework + modules, from a `freepbx-modules-17-*` release of TheTechNetwork/telephony-builds) with the classic `./start_asterisk start && ./install -n` instead of Sangoma's `freepbx17` package. File, directory or URL. |
+| `--module-repo <url>` | `MODULE_REPO_URL` | Set FreePBX's `MODULE_REPO` (the server Module Admin downloads modules from) to our own module server. |
+| `--no-sangoma` | | Refuse to use `deb.freepbx.org` at all; fails if something would still need it (e.g. `--dahdi`). Implied when both Asterisk and FreePBX come from our sources. |
+| | `DOWNLOAD_AUTH_HEADER` | Extra HTTP header for the downloads above, e.g. `Authorization: token ...`. |
+| | `INSTALLER_REPO_URL` | Where the version check fetches the latest copy of this script (default: this fork's `custom/main`). |
+
+Example, with the release assets downloaded first (`gh release download ...`):
+
+```bash
+bash sng_freepbx_debian_install.sh --no-sangoma \
+    --asterisk-debs /root/asterisk-debs \
+    --freepbx-tarball /root/freepbx-modules/freepbx-17.0-full.tgz
+```
+
+In this mode the script does not add Sangoma's apt key, repository or pinning; it does
+not install `sysadmin17`, `sangoma-pbx17`, `ioncube-loader-82` or `freepbx17`; it applies
+the PHP/Apache settings FreePBX needs that `sangoma-pbx17` used to provide; and it skips
+`fwconsole ma upgradeall` (unless `--module-repo` is given) and
+`fwconsole ma refreshsignatures`, both of which would fetch Sangoma's module builds.
+Packages that only exist in Sangoma's repository (e.g. `libtonezone`) are skipped.
+DAHDI (`--dahdi`) is not available, because its kernel modules only exist there.
+See `freepbx/INDEPENDENCE.md` in TheTechNetwork/telephony-builds.
+
 ### License
 
 [This modules code is licensed as GPLv3+](https://www.gnu.org/licenses/gpl-3.0.txt)
