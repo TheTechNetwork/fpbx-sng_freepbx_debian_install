@@ -33,6 +33,28 @@ DEBIAN_MIRROR="http://ftp.debian.org/debian"
 NPM_MIRROR=""
 DEBIAN_OS_VERSION=""
 
+#####################################################################################
+# TheTechNetwork: optional install from our own sources instead of Sangoma's servers.
+# All of these default to empty, which keeps the upstream behaviour (Sangoma apt repo
+# deb.freepbx.org + freepbx17 package). See README.md "Installing without Sangoma".
+#   ASTERISK_DEBS        dir / .deb / archive (tar.gz, tgz, tar.xz, zip) / http(s) URL of
+#                        those; several separated by spaces. Every *.deb found is installed.
+#   ASTERISK_DEB_INCLUDE extended regex; only .deb file names matching it are installed
+#   ASTERISK_DEB_EXCLUDE extended regex; .deb file names matching it are skipped
+#   FREEPBX_TARBALL      freepbx-17.0-full.tgz (framework + modules) as file, dir or URL
+#   MODULE_REPO_URL      set FreePBX's MODULE_REPO (Module Admin online repo) to this URL
+#   DOWNLOAD_AUTH_HEADER extra HTTP header for downloads, e.g. "Authorization: token XXX"
+#   INSTALLER_REPO_URL   where --skipversion-less runs fetch the latest copy of this script
+#####################################################################################
+ASTERISK_DEBS="${ASTERISK_DEBS:-}"
+ASTERISK_DEB_INCLUDE="${ASTERISK_DEB_INCLUDE:-}"
+ASTERISK_DEB_EXCLUDE="${ASTERISK_DEB_EXCLUDE:-(-dbgsym|-dbg)_}"
+FREEPBX_TARBALL="${FREEPBX_TARBALL:-}"
+MODULE_REPO_URL="${MODULE_REPO_URL:-}"
+DOWNLOAD_AUTH_HEADER="${DOWNLOAD_AUTH_HEADER:-}"
+INSTALLER_REPO_URL="${INSTALLER_REPO_URL:-https://raw.githubusercontent.com/TheTechNetwork/fpbx-sng_freepbx_debian_install/refs/heads/custom/main}"
+FREEPBX_SRC_DIR="/usr/src/freepbx"
+
 if [ -f /etc/os-release ]; then
     DEBIAN_OS_VERSION=$(grep -oP '(?<=VERSION_CODENAME=).*' /etc/os-release)
 fi
@@ -126,6 +148,30 @@ while [[ $# -gt 0 ]]; do
       NPM_MIRROR=$2
       shift; shift # past argument
       ;;
+		--asterisk-debs)
+			ASTERISK_DEBS=$2
+			shift; shift # past argument
+			;;
+		--asterisk-deb-include)
+			ASTERISK_DEB_INCLUDE=$2
+			shift; shift # past argument
+			;;
+		--asterisk-deb-exclude)
+			ASTERISK_DEB_EXCLUDE=$2
+			shift; shift # past argument
+			;;
+		--freepbx-tarball)
+			FREEPBX_TARBALL=$2
+			shift; shift # past argument
+			;;
+		--module-repo)
+			MODULE_REPO_URL=$2
+			shift; shift # past argument
+			;;
+		--no-sangoma)
+			nosangoma=true
+			shift # past argument
+			;;
 		-*)
 			echo "Unknown option $1"
 			exit 1
@@ -137,6 +183,28 @@ while [[ $# -gt 0 ]]; do
 	esac
 done
 
+# Work out whether anything still has to come from Sangoma's apt repository.
+# We only switch it off when the caller asked for at least one of our own sources and
+# nothing else needs that repo; --no-sangoma insists on it (and fails if impossible).
+if [ -n "$ASTERISK_DEBS" ] || [ -n "$FREEPBX_TARBALL" ]; then
+	if { [ -n "$ASTERISK_DEBS" ] || [ "$noast" ]; } && { [ -n "$FREEPBX_TARBALL" ] || [ "$nofpbx" ]; } && [ ! "$dahdi" ]; then
+		nosangoma=true
+	fi
+fi
+if [ "$nosangoma" ]; then
+	if [ -z "$ASTERISK_DEBS" ] && [ ! "$noast" ]; then
+		echo "--no-sangoma needs --asterisk-debs (or --noasterisk): Asterisk packages otherwise come from deb.freepbx.org"
+		exit 1
+	fi
+	if [ -z "$FREEPBX_TARBALL" ] && [ ! "$nofpbx" ]; then
+		echo "--no-sangoma needs --freepbx-tarball (or --nofreepbx): FreePBX otherwise comes from deb.freepbx.org"
+		exit 1
+	fi
+	if [ "$dahdi" ]; then
+		echo "--dahdi is not available with --no-sangoma: DAHDI/wanpipe kernel modules are only packaged in deb.freepbx.org"
+		exit 1
+	fi
+fi
 
 block_debian13_trixie_update() {
 	cat >/etc/apt/preferences.d/99-block-trixie.pref <<'EOF'
@@ -200,7 +268,8 @@ compare_version() {
 
 check_version() {
     # Fetching latest version and checksum
-    REPO_URL="https://github.com/FreePBX/sng_freepbx_debian_install/raw/master"
+    # TheTechNetwork: compare against our fork, not FreePBX/master (this copy differs from it).
+    REPO_URL="$INSTALLER_REPO_URL"
     wget -O /tmp/sng_freepbx_debian_install_latest_from_github.sh "$REPO_URL/sng_freepbx_debian_install.sh" >> "$log"
 
     latest_version=$(grep '^SCRIPTVER="' /tmp/sng_freepbx_debian_install_latest_from_github.sh | awk -F'"' '{print $2}')
@@ -343,9 +412,176 @@ install_asterisk() {
 	pkg_install asterisk-sounds-*
 }
 
+#####################################################################################
+# TheTechNetwork: helpers for installing from our own sources
+#####################################################################################
+
+# fetch_sources <name> <src...>
+# Collects every source (local dir, local file or http(s) URL) into one directory and
+# prints its path. Archives (.tar.gz/.tgz/.tar.xz/.tar/.zip) are unpacked in place.
+fetch_sources() {
+	local name="$1"; shift
+	local dest="/var/cache/freepbx-installer/$name"
+	local src f
+	rm -rf "$dest"
+	mkdir -p "$dest"
+	for src in "$@"; do
+		if [ -d "$src" ]; then
+			cp -a "$src"/. "$dest"/ || return 1
+		elif [ -f "$src" ]; then
+			cp -a "$src" "$dest"/ || return 1
+		elif [[ "$src" =~ ^https?:// ]]; then
+			f="$dest/$(basename "${src%%\?*}")"
+			log "Downloading $src"
+			if [ -n "$DOWNLOAD_AUTH_HEADER" ]; then
+				wget -q --header="$DOWNLOAD_AUTH_HEADER" -O "$f" "$src" >> "$log" 2>&1 || { log "download failed: $src"; return 1; }
+			else
+				wget -q -O "$f" "$src" >> "$log" 2>&1 || { log "download failed: $src"; return 1; }
+			fi
+		else
+			message "Source not found: $src"
+			return 1
+		fi
+	done
+	# Unpack archives (but not the FreePBX bundle, which install_freepbx_tarball handles).
+	while IFS= read -r -d '' f; do
+		case "$f" in
+			*freepbx-*-full.tgz) continue ;;
+			*.zip) unzip -o -q "$f" -d "$(dirname "$f")" >> "$log" || return 1 ;;
+			*) tar -xf "$f" -C "$(dirname "$f")" >> "$log" || return 1 ;;
+		esac
+	done < <(find "$dest" -type f \( -name '*.tar.gz' -o -name '*.tgz' -o -name '*.tar.xz' -o -name '*.tar' -o -name '*.zip' \) -print0)
+	echo "$dest"
+}
+
+# Install Asterisk from .deb files we built ourselves instead of deb.freepbx.org.
+install_asterisk_debs() {
+	local dir debs=() f base
+	pkg_install unzip
+	dir=$(fetch_sources asterisk-debs $ASTERISK_DEBS) || { message "Could not fetch $ASTERISK_DEBS"; return 1; }
+	while IFS= read -r f; do
+		base=$(basename "$f")
+		if [ -n "$ASTERISK_DEB_INCLUDE" ] && ! [[ "$base" =~ $ASTERISK_DEB_INCLUDE ]]; then
+			continue
+		fi
+		if [ -n "$ASTERISK_DEB_EXCLUDE" ] && [[ "$base" =~ $ASTERISK_DEB_EXCLUDE ]]; then
+			continue
+		fi
+		debs+=("$f")
+	done < <(find "$dir" -type f -name '*.deb' | sort)
+	if [ ${#debs[@]} -eq 0 ]; then
+		message "No Asterisk .deb files found in: $ASTERISK_DEBS"
+		return 1
+	fi
+	message "Installing ${#debs[@]} Asterisk packages from $ASTERISK_DEBS"
+	log "$(printf '  %s\n' "${debs[@]}")"
+	mkdir -p /var/lib/asterisk/moh
+	apt-get -y -o DPkg::Options::="--force-confnew" -o Dpkg::Options::="--force-overwrite" install "${debs[@]}" >> "$log"
+	if ! command -v asterisk >/dev/null 2>&1; then
+		message "The Asterisk packages did not provide an 'asterisk' binary"
+		return 1
+	fi
+	# FreePBX starts and stops Asterisk itself (fwconsole start / freepbx.service).
+	if systemctl list-unit-files asterisk.service >/dev/null 2>&1; then
+		systemctl disable --now asterisk.service >> "$log" 2>&1 || true
+	fi
+	message "$(asterisk -V)"
+}
+
+# What Sangoma's sangoma-pbx17 package does that FreePBX needs, without the package.
+setup_pbx_base() {
+	cat > /etc/php/${PHPVERSION}/mods-available/freepbx.ini <<EOF
+; Installed by sng_freepbx_debian_install.sh (replaces the sangoma-pbx17 package)
+session.save_path = "/var/lib/php/session"
+memory_limit = 512M
+upload_max_filesize = 256M
+EOF
+	# Apache runs as the asterisk user, like on Sangoma's distro.
+	sed -i -e 's/^\(User\|Group\) .\+$/\1 asterisk/' /etc/apache2/apache2.conf
+	sed -i -e 's/^export APACHE_RUN_USER=.*/export APACHE_RUN_USER=asterisk/' \
+	       -e 's/^export APACHE_RUN_GROUP=.*/export APACHE_RUN_GROUP=asterisk/' /etc/apache2/envvars
+	chown asterisk:asterisk /var/www/html
+	systemctl enable redis-server >> "$log" 2>&1 || true
+	systemctl start redis-server >> "$log" 2>&1 || true
+}
+
+# Install FreePBX (framework + bundled modules) from our freepbx-17.0-full.tgz instead of
+# Sangoma's freepbx17 .deb. This is the classic tarball install: ./start_asterisk, ./install -n.
+install_freepbx_tarball() {
+	local dir tarball
+	pkg_install unzip
+	dir=$(fetch_sources freepbx-src $FREEPBX_TARBALL) || { message "Could not fetch $FREEPBX_TARBALL"; return 1; }
+	tarball=$(find "$dir" -type f -name 'freepbx-*-full.tgz' | sort | tail -1)
+	rm -rf "$FREEPBX_SRC_DIR"
+	if [ -n "$tarball" ]; then
+		tar -xzf "$tarball" -C "$(dirname "$FREEPBX_SRC_DIR")"
+	elif [ -x "$dir/freepbx/install" ]; then
+		mv "$dir/freepbx" "$FREEPBX_SRC_DIR"
+	else
+		message "No freepbx-*-full.tgz found in: $FREEPBX_TARBALL"
+		return 1
+	fi
+	[ -x "$FREEPBX_SRC_DIR/install" ] || { message "$FREEPBX_SRC_DIR/install missing"; return 1; }
+
+	cat > /etc/systemd/system/freepbx.service <<'EOF'
+[Unit]
+Description=FreePBX VoIP Server
+After=mariadb.service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/fwconsole start
+ExecStop=/usr/sbin/fwconsole stop
+
+[Install]
+WantedBy=multi-user.target
+EOF
+	cat > /etc/apache2/sites-available/freepbx.conf <<'EOF'
+<Directory /var/www/>
+	Options Indexes FollowSymLinks
+	AllowOverride all
+	Require all granted
+</Directory>
+<Directory "/var/www/html">
+	Options Indexes FollowSymLinks
+	ExpiresActive on
+	ExpiresByType image/png "access plus 1 year"
+	ExpiresByType image/gif "access plus 1 year"
+	ExpiresByType image/jpg "access plus 1 year"
+	ExpiresByType css/text "access plus 1 year"
+	AllowOverride All
+	Require all granted
+</Directory>
+EOF
+	systemctl daemon-reload
+	systemctl enable mariadb >> "$log" 2>&1
+	systemctl start mariadb >> "$log" 2>&1
+
+	mkdir -p /var/lib/asterisk /var/log/asterisk /var/spool/asterisk /var/run/asterisk /etc/asterisk /home/asterisk
+	chown -R asterisk:asterisk /var/lib/asterisk /var/log/asterisk /var/spool/asterisk /var/run/asterisk /etc/asterisk /home/asterisk
+	if [ ! -s /etc/asterisk/asterisk.conf ]; then
+		cp "$FREEPBX_SRC_DIR/installlib/files/asterisk.conf" /etc/asterisk/asterisk.conf
+		chown asterisk:asterisk /etc/asterisk/asterisk.conf
+	fi
+
+	cd "$FREEPBX_SRC_DIR"
+	setCurrentStep "Starting Asterisk for the FreePBX installer"
+	./start_asterisk start >> "$log" 2>&1
+	setCurrentStep "Running the FreePBX installer from $FREEPBX_TARBALL"
+	./install -n --dbuser root >> "$log" 2>&1
+	cd - >/dev/null
+}
+
 
 
 setup_repositories() {
+	if [ "$nosangoma" ]; then
+		setup_debian_repositories
+		return
+	fi
 	apt-key del "9641 7C6E 0423 6E0A 986B  69EF DE82 7447 3C8D 0E52" >> "$log"
 
 	wget -O - http://deb.freepbx.org/gpg/aptly-pubkey.asc | gpg --dearmor --yes -o /etc/apt/trusted.gpg.d/freepbx.gpg  >> "$log"
@@ -402,6 +638,23 @@ Pin: origin deb.freepbx.org
 Pin-Priority: 1
 EOF
     fi
+}
+
+# --no-sangoma: only the Debian side of setup_repositories (non-free for libfdk-aac2,
+# pin to bookworm); no deb.freepbx.org key, repo or pinning.
+setup_debian_repositories() {
+	REPO_FILE="/etc/apt/sources.list"
+	if [ -z "$noaac" ]; then
+		REPO_LINE="deb $DEBIAN_MIRROR bookworm main non-free non-free-firmware"
+		if ! grep -qsF "$REPO_LINE" "$REPO_FILE"; then
+			echo "$REPO_LINE" | tee -a "$REPO_FILE" >> "$log"
+			echo "Added Bookworm main repo: $REPO_LINE" >> "$log"
+		fi
+		fix_debian12_repo
+		block_debian13_trixie_update
+	fi
+	apt-get update >> "$log"
+	message "Not adding Sangoma's deb.freepbx.org repository (installing from our own sources)"
 }
 
 #create post apt run script to run and check everything apt command is finished executing
@@ -733,7 +986,7 @@ inspect_running_processes() {
 
 check_freepbx() {
      # Check if FreePBX is installed
-    if ! dpkg -l | grep -q 'freepbx'; then
+    if ! dpkg -l | grep -q 'freepbx' && [ ! -e /etc/freepbx.conf ]; then
         message "FreePBX is not installed. Please install FreePBX to proceed."
     else
         verify_module_status
@@ -778,8 +1031,11 @@ check_asterisk() {
 
 hold_packages() {
     # List of package names to hold
-    local packages=("sangoma-pbx17" "nodejs" "node-*")
-    if [ ! "$nofpbx" ] ; then
+    local packages=("nodejs" "node-*")
+    if isinstalled sangoma-pbx17; then
+        packages+=("sangoma-pbx17")
+    fi
+    if [ ! "$nofpbx" ] && isinstalled freepbx17; then
         packages+=("freepbx17")
     fi
 
@@ -1063,6 +1319,12 @@ if [ "$nochrony" != true ]; then
 	DEPPKGS+=("chrony")
 fi
 for i in "${!DEPPKGS[@]}"; do
+	if [ "$nosangoma" ] && ! apt-cache show "${DEPPKGS[$i]}" >/dev/null 2>&1; then
+		# e.g. libtonezone only exists in deb.freepbx.org; our Asterisk .debs carry
+		# their own dependencies.
+		message "Skipping ${DEPPKGS[$i]}: not available without Sangoma's repository"
+		continue
+	fi
 	pkg_install "${DEPPKGS[$i]}"
 done
 
@@ -1243,19 +1505,30 @@ else
 	# TODO Need to check if asterisk installed already then remove that and install new ones.
 	# Install Asterisk
 	setCurrentStep "Installing Asterisk packages."
-	install_asterisk $ASTVERSION
+	if [ -n "$ASTERISK_DEBS" ]; then
+		install_asterisk_debs
+	else
+		install_asterisk $ASTVERSION
+	fi
 fi
 
 # Install PBX dependent packages
 setCurrentStep "Installing FreePBX packages"
 
-FPBXPKGS=("sysadmin17"
-	   "sangoma-pbx17"
-	   "ffmpeg"
-   )
-for i in "${!FPBXPKGS[@]}"; do
-	pkg_install "${FPBXPKGS[$i]}"
-done
+if [ "$nosangoma" ]; then
+	# sysadmin17 (commercial) and sangoma-pbx17 only exist in deb.freepbx.org;
+	# ffmpeg comes from Debian instead.
+	setup_pbx_base
+	pkg_install ffmpeg
+else
+	FPBXPKGS=("sysadmin17"
+		   "sangoma-pbx17"
+		   "ffmpeg"
+	   )
+	for i in "${!FPBXPKGS[@]}"; do
+		pkg_install "${FPBXPKGS[$i]}"
+	done
+fi
 
 
 #Enabling freepbx.ini file
@@ -1279,8 +1552,17 @@ if [ "$nofpbx" ] ; then
   message "Skipping FreePBX 17 installation due to nofreepbx option"
 else
   setCurrentStep "Installing FreePBX 17"
-  pkg_install ioncube-loader-82
-  pkg_install freepbx17
+  if [ -n "$FREEPBX_TARBALL" ]; then
+    install_freepbx_tarball
+  else
+    pkg_install ioncube-loader-82
+    pkg_install freepbx17
+  fi
+
+  if [ -n "$MODULE_REPO_URL" ]; then
+    setCurrentStep "Setting MODULE_REPO to $MODULE_REPO_URL"
+    fwconsole setting MODULE_REPO "$MODULE_REPO_URL" >> "$log"
+  fi
 
   if [ -n "$NPM_MIRROR" ] ; then
     setCurrentStep "Setting environment variable npm_config_registry=$NPM_MIRROR"
@@ -1303,8 +1585,13 @@ else
   setCurrentStep "Installing all local modules"
   fwconsole ma installlocal >> "$log"
 
-  setCurrentStep "Upgrading FreePBX 17 modules"
-  fwconsole ma upgradeall >> "$log"
+  if [ -n "$FREEPBX_TARBALL" ] && [ -z "$MODULE_REPO_URL" ]; then
+    # Without our own module repository, upgradeall would pull Sangoma's builds over ours.
+    message "Skipping 'fwconsole ma upgradeall' (FreePBX installed from $FREEPBX_TARBALL, no --module-repo)"
+  else
+    setCurrentStep "Upgrading FreePBX 17 modules"
+    fwconsole ma upgradeall >> "$log"
+  fi
 
   setCurrentStep "Reloading and restarting FreePBX 17"
   fwconsole reload >> "$log"
@@ -1312,11 +1599,15 @@ else
 
   if [ "$opensourceonly" ]; then
     # Uninstall the sysadmin helper package for the sysadmin commercial module
-    message "Uninstalling sysadmin17"
-    apt-get purge -y sysadmin17 >> "$log"
+    if isinstalled sysadmin17; then
+      message "Uninstalling sysadmin17"
+      apt-get purge -y sysadmin17 >> "$log"
+    fi
     # Uninstall ionCube loader required for commercial modules and to install the freepbx17 package
-    message "Uninstalling ioncube-loader-82"
-    apt-get purge -y ioncube-loader-82 >> "$log"
+    if isinstalled ioncube-loader-82; then
+      message "Uninstalling ioncube-loader-82"
+      apt-get purge -y ioncube-loader-82 >> "$log"
+    fi
   fi
 fi
 
@@ -1382,7 +1673,11 @@ create_post_apt_script
 # Refresh signatures
 setCurrentStep "Refreshing modules signatures."
 count=1
-if [ ! "$nofpbx" ]; then
+if [ -n "$FREEPBX_TARBALL" ]; then
+  # Our module tarballs are not signed by Sangoma; refreshsignatures would replace them
+  # with Sangoma's builds from mirror.freepbx.org (or fail once that is gone).
+  message "Skipping 'fwconsole ma refreshsignatures' (FreePBX installed from $FREEPBX_TARBALL)"
+elif [ ! "$nofpbx" ]; then
   while [ $count -eq 1 ]; do
     set +e
     refresh_signatures
