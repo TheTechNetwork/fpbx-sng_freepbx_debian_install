@@ -567,9 +567,28 @@ EOF
 		chown asterisk:asterisk /etc/asterisk/asterisk.conf
 	fi
 
+	# Asterisk needs a minimal configuration (modules.conf etc.) to boot. Seed /etc/asterisk
+	# with FreePBX's own base files (the same ones ./install puts there) unless the
+	# Asterisk packages already shipped them.
+	for f in "$FREEPBX_SRC_DIR"/amp_conf/astetc/*.conf; do
+		[ -e "/etc/asterisk/$(basename "$f")" ] || install -o asterisk -g asterisk -m 0664 "$f" /etc/asterisk/
+	done
+
 	cd "$FREEPBX_SRC_DIR"
 	setCurrentStep "Starting Asterisk for the FreePBX installer"
 	./start_asterisk start >> "$log" 2>&1
+	local i
+	for i in $(seq 1 30); do
+		if runuser asterisk -s /bin/bash -c "cd ~/ && asterisk -rx 'core waitfullybooted'" >> "$log" 2>&1; then
+			break
+		fi
+		sleep 2
+	done
+	if ! runuser asterisk -s /bin/bash -c "cd ~/ && asterisk -rx 'core show version'" >> "$log" 2>&1; then
+		message "Asterisk did not come up; trying it in the foreground for diagnostics:"
+		timeout 20 runuser asterisk -s /bin/bash -c "asterisk -cvvvv -g" < /dev/null 2>&1 | tail -n 40 | tee -a "$log" || true
+		return 1
+	fi
 	setCurrentStep "Running the FreePBX installer from $FREEPBX_TARBALL"
 	./install -n --dbuser root >> "$log" 2>&1
 	cd - >/dev/null
