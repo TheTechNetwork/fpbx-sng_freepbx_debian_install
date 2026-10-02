@@ -563,7 +563,12 @@ EOF
 	mkdir -p /var/lib/asterisk /var/log/asterisk /var/spool/asterisk /var/run/asterisk /etc/asterisk /home/asterisk
 	chown -R asterisk:asterisk /var/lib/asterisk /var/log/asterisk /var/spool/asterisk /var/run/asterisk /etc/asterisk /home/asterisk
 	if [ ! -s /etc/asterisk/asterisk.conf ]; then
-		cp "$FREEPBX_SRC_DIR/installlib/files/asterisk.conf" /etc/asterisk/asterisk.conf
+		# FreePBX's template, pointed at wherever these Asterisk packages put their modules
+		# (Sangoma: /usr/lib64/..., Debian multiarch: /usr/lib/x86_64-linux-gnu/...).
+		local moddir
+		moddir=$(find /usr/lib64 /usr/lib -maxdepth 3 -type d -path '*/asterisk/modules' 2>/dev/null | head -1)
+		sed -e "s|^astmoddir = .*|astmoddir = ${moddir:-/usr/lib/asterisk/modules}|" \
+			"$FREEPBX_SRC_DIR/installlib/files/asterisk.conf" > /etc/asterisk/asterisk.conf
 		chown asterisk:asterisk /etc/asterisk/asterisk.conf
 	fi
 
